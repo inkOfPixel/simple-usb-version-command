@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>iFixit USB Device Control</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                padding: 20px;
+                background-color: #f0f0f0;
+                margin: 0;
+            }
+            .container {
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: white;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            h1 {
+                color: #333;
+                text-align: center;
+            }
+            button {
+                width: 100%;
+                background-color: #1975F1;
+                border: none;
+                color: white;
+                padding: 15px 20px;
+                text-align: center;
+                text-decoration: none;
+                display: block;
+                font-size: 16px;
+                margin: 8px 0;
+                cursor: pointer;
+                border-radius: 4px;
+            }
+            button:disabled {
+                background-color: #cccccc;
+                cursor: not-allowed;
+            }
+            textarea {
+                width: 100%;
+                height: 100px;
+                padding: 12px;
+                margin: 8px 0;
+                box-sizing: border-box;
+                border: 2px solid #ccc;
+                border-radius: 4px;
+                resize: none; /* Prevent resizing */
+            }
+        </style>
+    </head>
+    <body>
+    <div class="container">
+        <h1>iFixit USB Device Control</h1>
+        <button id="connectBtn" disabled>Connect to USB Device</button>
+        <button id="disconnectBtn" disabled>Disconnect USB Device</button>
+        <button id="sendBtn" disabled>Send Version command</button>
+        <textarea id="resultArea" placeholder="Command result will be displayed here..." readonly></textarea>
+        <button id="clearBtn">Clear Textarea</button> <!-- Clear Textarea Button -->
+    </div>
+
+    <script>
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const sendBtn = document.getElementById('sendBtn');
+        const resultArea = document.getElementById('resultArea');
+        const clearBtn = document.getElementById('clearBtn');
+
+        connectBtn.addEventListener('click', () => {
+            if (typeof Android !== 'undefined') {
+                Android.connectUsb();
+            } else {
+                displayCommandResult('Android interface not available');
+            }
+        });
+
+        disconnectBtn.addEventListener('click', () => {
+            if (typeof Android !== 'undefined') {
+                Android.disconnectUsb();
+            } else {
+                displayCommandResult('Android interface not available');
+            }
+        });
+
+        sendBtn.addEventListener('click', () => {
+            if (typeof Android !== 'undefined') {
+                Android.sendCommand('version\r\n');
+            } else {
+                displayCommandResult('Android interface not available');
+            }
+        });
+
+        clearBtn.addEventListener('click', () => {
+            resultArea.value = '';
+        });
+
+        function updateButtonStates(isAttached, isConnected) {
+            connectBtn.disabled = !isAttached || isConnected;
+            disconnectBtn.disabled = !isAttached || !isConnected;
+            sendBtn.disabled = !isAttached || !isConnected;
+        }
+
+        function displayCommandResult(message) {
+            resultArea.value = message;
+        }
+    </script>
+    </body>
+</html>
