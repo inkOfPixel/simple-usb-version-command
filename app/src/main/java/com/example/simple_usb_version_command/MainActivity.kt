@@ -74,7 +74,7 @@ class MainActivity : ComponentActivity(), SerialInputOutputManager.Listener {
                                 settings.javaScriptEnabled = true
                                 WebView.setWebContentsDebuggingEnabled(true)
                                 addJavascriptInterface(WebAppInterface(), "Android")
-                                loadUrl("https://bc17d2d2201a.ngrok.app/fixhub/console")
+                                loadUrl("https://ifixit-nextjs-fixhub-android-compatible-version.vercel.app/fixhub/console")
                                 webView = this
                             }
                         })
