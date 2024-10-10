@@ -72,7 +72,7 @@
 
         connectBtn.addEventListener('click', () => {
             if (typeof Android !== 'undefined') {
-                Android.connectUsb();
+                console.log(Android.connectUsb());
             } else {
                 displayCommandResult('Android interface not available');
             }

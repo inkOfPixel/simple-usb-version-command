@@ -9,9 +9,10 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Bundle
 import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
 import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -28,36 +29,22 @@ import com.example.simple_usb_version_command.ui.theme.SimpleusbversioncommandTh
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import com.hoho.android.usbserial.util.SerialInputOutputManager
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import android.util.Base64
 import java.io.IOException
 
 private const val TAG = "MainActivity"
 private const val ACTION_USB_PERMISSION = "com.example.USB_PERMISSION"
 
-// Enum to represent different types of USB devices
-enum class DeviceType {
-    HUB, IRON, UNKNOWN
-}
-
 class MainActivity : ComponentActivity(), SerialInputOutputManager.Listener {
     private lateinit var usbManager: UsbManager
     private lateinit var webView: WebView
-    private var usbSerialPort: UsbSerialPort? = null
+
     private var usbIoManager: SerialInputOutputManager? = null
+    private var usbDevice: UsbDevice? = null
+    private var usbSerialPort: UsbSerialPort? = null
     private var isAttached = false
     private var isConnected = false
-    private var currentDeviceType = DeviceType.UNKNOWN
-    private val receivedString = StringBuilder()
-    private val coroutineScope = CoroutineScope(Dispatchers.Main + Job())
-
-    private val validDevices = listOf(
-        UsbId(13420, 7936), UsbId(13420, 7937)
-    )
+    private val validDevices = listOf(UsbId(13420, 7936), UsbId(13420, 7937))
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,7 +57,6 @@ class MainActivity : ComponentActivity(), SerialInputOutputManager.Listener {
         super.onDestroy()
         unregisterReceiver(usbReceiver)
         disconnect()
-        coroutineScope.cancel()
     }
 
     // Set up the UI using Jetpack Compose
@@ -85,15 +71,10 @@ class MainActivity : ComponentActivity(), SerialInputOutputManager.Listener {
                     ) {
                         AndroidView(modifier = Modifier.fillMaxSize(), factory = { context ->
                             WebView(context).apply {
-                                webViewClient = object : WebViewClient() {
-                                    override fun onPageFinished(view: WebView?, url: String?) {
-                                        super.onPageFinished(view, url)
-                                        checkForAttachedUsbDevices()
-                                    }
-                                }
                                 settings.javaScriptEnabled = true
+                                WebView.setWebContentsDebuggingEnabled(true)
                                 addJavascriptInterface(WebAppInterface(), "Android")
-                                loadUrl("file:///android_asset/index.html")
+                                loadUrl("https://bc17d2d2201a.ngrok.app/fixhub/console")
                                 webView = this
                             }
                         })
@@ -123,60 +104,40 @@ class MainActivity : ComponentActivity(), SerialInputOutputManager.Listener {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 ACTION_USB_PERMISSION -> handleUsbPermission(intent)
-                UsbManager.ACTION_USB_DEVICE_ATTACHED -> handleUsbAttached(intent)
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> handleUsbDetached()
-            }
-        }
-    }
-
-    // Check for already attached USB devices
-    private fun checkForAttachedUsbDevices() {
-        val deviceList = usbManager.deviceList
-        if (deviceList.isNotEmpty()) {
-            for (device in deviceList.values) {
-                if (isValidDevice(device)) {
-                    Log.d(TAG, "Attached valid USB device: ${device.deviceName}")
-                    handleUsbAttached(Intent().apply { putExtra(UsbManager.EXTRA_DEVICE, device) })
-                    break
-                }
-            }
-        } else {
-            Log.d(TAG, "No USB devices are attached")
-        }
-    }
-
-    // Handle USB device attachment
-    private fun handleUsbAttached(intent: Intent) {
-        val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-        device?.let {
-            if (isValidDevice(it)) {
-                isAttached = true
-                currentDeviceType = getDeviceType(it)
-                updateWebViewButtonStates()
-                Log.d(TAG, "Valid USB device attached: ${it.deviceName}, Type: $currentDeviceType")
-            } else {
-                Log.d(TAG, "Unsupported USB device attached: ${it.deviceName}")
             }
         }
     }
 
     // Handle USB permission result
     private fun handleUsbPermission(intent: Intent) {
-        synchronized(this) {
-            val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-            if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                device?.let {
-                    if (isValidDevice(it)) {
-                        Log.d(TAG, "USB permission granted")
-                        connect(it)
-                    } else {
-                        Log.d(TAG, "USB permission granted for unsupported device")
-                    }
+        val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+        val isPermissionGranted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+
+        when {
+            isPermissionGranted && device != null -> {
+                if (isValidDevice(device)) {
+                    Log.d(TAG, "USB permission granted")
+                    val driver = UsbSerialProber.getDefaultProber().probeDevice(device)
+                    usbDevice = driver.device
+                    usbSerialPort = driver.ports[0]
+                    webView.evaluateJavascript("javascript:resolvePortRequest();", null)
+                } else {
+                    Log.d(TAG, "USB permission granted for unsupported device")
+                    webView.evaluateJavascript("javascript:rejectPortRequest();", null)
                 }
-            } else if (device != null && usbManager.hasPermission(device)) {
-                connect(device)
-            } else {
+            }
+
+            device != null && usbManager.hasPermission(device) -> {
+                val driver = UsbSerialProber.getDefaultProber().probeDevice(device)
+                usbDevice = driver.device
+                usbSerialPort = driver.ports[0]
+                webView.evaluateJavascript("javascript:resolvePortRequest();", null)
+            }
+
+            else -> {
                 Log.e(TAG, "USB permission denied")
+                webView.evaluateJavascript("javascript:rejectPortRequest(\"Permission denied\");", null)
             }
         }
     }
@@ -184,107 +145,45 @@ class MainActivity : ComponentActivity(), SerialInputOutputManager.Listener {
     // Handle USB device detachment
     private fun handleUsbDetached() {
         isAttached = false
-        currentDeviceType = DeviceType.UNKNOWN
-        updateWebViewButtonStates()
         disconnect()
+        webView.evaluateJavascript("javascript:onNativeEvent(\"disconnect\");", null)
         Log.d(TAG, "USB device detached")
     }
 
     // Request USB permission
     private fun requestUsbPermission(usbDevice: UsbDevice) {
-        if (usbManager.hasPermission(usbDevice)) {
-            connect(usbDevice)
-        } else {
-            val usbPermissionIntent = PendingIntent.getBroadcast(
-                this,
-                0,
-                Intent(ACTION_USB_PERMISSION).apply { setPackage(packageName) },
-                PendingIntent.FLAG_MUTABLE
-            )
-            usbManager.requestPermission(usbDevice, usbPermissionIntent)
-        }
-    }
-
-    // Connect to the USB device
-    private fun connect(device: UsbDevice) {
-        coroutineScope.launch(Dispatchers.IO) {
-            try {
-                val driver = UsbSerialProber.getDefaultProber().probeDevice(device)
-                usbSerialPort = driver.ports[0]
-                val usbConnection = usbManager.openDevice(driver.device)
-                if (usbConnection == null) {
-                    Log.e(TAG, "Failed to open device")
-                    return@launch
-                }
-                Log.d(TAG, "USB connection opened")
-
-                usbSerialPort?.apply {
-                    open(usbConnection)
-                    setParameters(115200, UsbSerialPort.DATABITS_8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
-                    dtr = true
-                    rts = true
-                }
-                Log.d(TAG, "USB serial port opened and parameters set")
-
-                usbIoManager = SerialInputOutputManager(usbSerialPort, this@MainActivity).apply { start() }
-                Log.d(TAG, "SerialInputOutputManager started")
-
-                isConnected = true
-                updateWebViewButtonStates()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error connecting to device", e)
-            }
-        }
+        val usbPermissionIntent = PendingIntent.getBroadcast(
+            this,
+            0,
+            Intent(ACTION_USB_PERMISSION).apply { setPackage(packageName) },
+            PendingIntent.FLAG_MUTABLE
+        )
+        usbManager.requestPermission(usbDevice, usbPermissionIntent)
     }
 
     // Disconnect from the USB device
     private fun disconnect() {
-        coroutineScope.launch(Dispatchers.IO) {
             try {
                 usbIoManager?.stop()
                 usbSerialPort?.close()
                 usbIoManager = null
                 usbSerialPort = null
+                usbDevice = null
                 isConnected = false
-                updateWebViewButtonStates()
                 Log.d(TAG, "USB disconnected")
             } catch (e: IOException) {
                 Log.e(TAG, "Error disconnecting USB", e)
             }
-        }
     }
 
     // Handle new data received from the USB device
     override fun onNewData(data: ByteArray?) {
         data?.let {
-            val receivedData = String(it, Charsets.UTF_8)
-            receivedString.append(receivedData)
-            processReceivedData()
-        }
-    }
-
-    // Process the received data and update the WebView
-    private fun processReceivedData() {
-        val delimiter = getDelimiter()
-        val index = receivedString.indexOf(delimiter)
-        if (index != -1) {
-            val extractedString = receivedString.substring(0, index).trim()
-            receivedString.delete(0, index + delimiter.length)
-            coroutineScope.launch(Dispatchers.Main) {
-                Log.d(TAG, "Received complete line: $extractedString")
-                val jsCode = "javascript:displayCommandResult('${
-                    extractedString.replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
-                }');"
-                webView.evaluateJavascript(jsCode, null)
+            val base64Data = Base64.encodeToString(it, Base64.NO_WRAP)
+            runOnUiThread {
+                webView.evaluateJavascript("javascript:onNewData('$base64Data')", null)
             }
         }
-    }
-
-    // Get the appropriate delimiter based on the device type
-    private fun getDelimiter(): String = when (currentDeviceType) {
-        DeviceType.HUB -> "\u001B[1;32mifixitl5:~$ \u001B[m"
-        DeviceType.IRON -> "\u001B[1;32mifixitiron:~$ \u001B[m"
-        DeviceType.UNKNOWN -> throw IllegalArgumentException("Cannot get delimiter for unknown device type")
     }
 
     // Handle run errors
@@ -292,63 +191,98 @@ class MainActivity : ComponentActivity(), SerialInputOutputManager.Listener {
         Log.e(TAG, "Run error: ${e?.message}", e)
     }
 
-    // Update the WebView button states
-    private fun updateWebViewButtonStates() {
-        runOnUiThread {
-            val jsCode = "javascript:updateButtonStates($isAttached, $isConnected, '${currentDeviceType}');"
-            webView.evaluateJavascript(jsCode, null)
-        }
-    }
-
     // Check if the USB device is valid
     private fun isValidDevice(device: UsbDevice): Boolean =
         validDevices.any { it.vendorId == device.vendorId && it.productId == device.productId }
 
-    // Get the device type based on the product ID
-    private fun getDeviceType(device: UsbDevice): DeviceType = when (device.productId) {
-        7936 -> DeviceType.HUB
-        7937 -> DeviceType.IRON
-        else -> DeviceType.UNKNOWN
-    }
-
     // WebAppInterface for JavaScript communication
     inner class WebAppInterface {
         @JavascriptInterface
+        fun hasValidDeviceConnected(): Boolean {
+            try {
+                val availableDrivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
+                val validDriver = availableDrivers.find { isValidDevice(it.device) }
+                if (validDriver != null) {
+                    return true;
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in hasValidDeviceConnected", e)
+            }
+            return false;
+        }
+
+        @JavascriptInterface
+        fun requestPort() {
+            try {
+                Log.d(TAG, "Connecting to USB...")
+                val availableDrivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
+                val validDriver = availableDrivers.find { isValidDevice(it.device) }
+                if (validDriver == null) {
+                    Log.e(TAG, "No valid drivers found")
+                    return
+                }
+                Log.d(TAG, "Found valid driver: ${validDriver.javaClass.simpleName}")
+                requestUsbPermission(validDriver.device)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in connectUsb", e)
+            }
+        }
+
+        @JavascriptInterface
+        fun getInfo(): String? {
+            return usbDevice?.let { device ->
+                val productId = device.productId
+                val vendorId = device.vendorId
+                return "{ \"usbProductId\": $productId, \"usbVendorId\": $vendorId }"
+            }
+        }
+
+        @JavascriptInterface
         fun connectUsb() {
-            coroutineScope.launch(Dispatchers.IO) {
-                try {
-                    Log.d(TAG, "Connecting to USB...")
-                    val availableDrivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
-                    val validDriver = availableDrivers.find { isValidDevice(it.device) }
-                    if (validDriver == null) {
-                        Log.e(TAG, "No valid drivers found")
-                        return@launch
-                    }
-                    Log.d(TAG, "Found valid driver: ${validDriver.javaClass.simpleName}")
-                    requestUsbPermission(validDriver.device)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error in connectUsb", e)
+            try {
+                val device = usbDevice ?: run {
+                    Log.e(TAG, "No device stored")
+                    return
                 }
+                val usbConnection = usbManager.openDevice(usbDevice)
+                if (usbConnection == null) {
+                    Log.e(TAG, "Failed to open device")
+                    return
+                }
+                Log.d(TAG, "USB connection opened")
+
+                usbSerialPort?.apply {
+                    open(usbConnection)
+                    setParameters(
+                        115200,
+                        UsbSerialPort.DATABITS_8,
+                        UsbSerialPort.STOPBITS_1,
+                        UsbSerialPort.PARITY_NONE
+                    )
+                    dtr = true
+                    rts = true
+                }
+                Log.d(TAG, "USB serial port opened and parameters set")
+
+                usbIoManager =
+                    SerialInputOutputManager(usbSerialPort, this@MainActivity).apply { start() }
+                Log.d(TAG, "SerialInputOutputManager started")
+
+                isConnected = true
+            } catch (e: Exception) {
+                Log.e(TAG, "Error connecting to device", e)
             }
         }
 
         @JavascriptInterface
-        fun disconnectUsb() {
-            coroutineScope.launch(Dispatchers.IO) {
-                disconnect()
-            }
-        }
-
-        @JavascriptInterface
-        fun sendCommand(command: String) {
-            coroutineScope.launch(Dispatchers.IO) {
-                try {
-                    Log.d(TAG, "Sending command: $command")
-                    usbSerialPort?.write((command).toByteArray(), 1000)
-                    Log.d(TAG, "Command sent: $command")
-                } catch (e: IOException) {
-                    Log.e(TAG, "Error sending command", e)
-                }
+        fun writeToPort(command: String) {
+            try {
+                val decodedCommand = String(Base64.decode(command, Base64.DEFAULT))
+                Log.d(TAG, "Sending command: $decodedCommand")
+                usbSerialPort?.write(decodedCommand.toByteArray(), 1000)
+                Log.d(TAG, "Command sent: $command")
+            } catch (e: IOException) {
+                Log.e(TAG, "Error sending command", e)
             }
         }
     }
